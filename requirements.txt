@@ -1,5 +1,5 @@
 yt-dlp
-openai-whisper
+faster-whisper
 torch
 edge-tts
 httpx
