@@ -38,6 +38,25 @@ YouTube Auto Dub is a comprehensive Python pipeline that automatically:
 - **Parallel Processing**: Optimized pipeline for faster execution
 - **Memory Management**: Automatic cleanup and resource optimization
 
+### ✅ Completed Features
+- [x] **Whisper ASR Integration**: High-accuracy speech recognition across multiple languages.
+- [x] **Hybrid Translation Engine**: Implemented a fail-safe translation system with automatic retry logic.
+- [x] **Smart Audio Chunking**: Intelligent segmentation of text to prevent TTS overlapping and maintain flow.
+- [x] **Dynamic Time-Stretching**: Automatically adjusts speech speed to match the original video timestamps.
+- [x] **SRT Subtitle Generation**: Automatically creates translated closed captions (.srt) for the output video.
+- [x] **Robust CLI**: Easy-to-use command-line interface with customizable language and gender parameters.
+
+### 🚀 In Progress (Active Development)
+- [ ] **Multi-Speaker Diarization**: Integrating `pyannote.audio` to identify different speakers and assign unique voices to each.
+- [ ] **Advanced Voice Conversion**: Implementing RVC (Retrieval-based Voice Conversion) to allow custom voice cloning and emotion retention.
+- [ ] **Background Music (BGM) Preservation**: Using `Demucs` to separate vocals from background tracks, allowing dubbed audio to play over the original music/ambience instead of silence.
+
+### 🛠 Future Roadmap
+- [ ] **Batch Processing**: Support for processing entire YouTube Playlists or Channels in one command.
+- [ ] **Web Interface (GUI)**: A user-friendly web dashboard built with Streamlit or Gradio.
+- [ ] **Local LLM Translation**: Support for running Llama 3 or Mistral locally for offline, private translations.
+- [ ] **4K Pro Rendering**: Optimized FFmpeg profiles for high-bitrate 4K video exporting.
+
 ## 🚀 Quick Start
 
 ### Prerequisites
@@ -143,8 +162,6 @@ YouTube URL → Download → Transcribe → Chunk → Translate → TTS → Sync
 - **`src/engines.py`**: AI/ML engines (Whisper, Translator, TTS)
 - **`src/youtube.py`**: YouTube content downloading
 - **`src/media.py`**: Audio/video processing with FFmpeg
-- **`src/audio_separation.py`**: Demucs audio source separation
-- **`src/speaker_diarization.py`**: Pyannote speaker identification
 - **`src/googlev4.py`**: Google Translate integration
 - **`src/core_utils.py`**: Shared utilities and exceptions
 
@@ -153,8 +170,6 @@ YouTube URL → Download → Transcribe → Chunk → Translate → TTS → Sync
 - **Whisper**: OpenAI's speech recognition model
 - **Google Translate**: Web scraping for translation
 - **Edge TTS**: Microsoft's neural text-to-speech
-- **Demucs**: Meta's audio source separation
-- **Pyannote.audio**: Speaker diarization
 
 ## 🛠️ Configuration
 

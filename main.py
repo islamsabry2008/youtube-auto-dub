@@ -1,17 +1,11 @@
 #!/usr/bin/env python3
-"""
-YouTube Auto Dub - Automated Video Dubbing Pipeline.
+"""YouTube Auto Sub - Automated Video Subtitling Pipeline.
 
-This module provides a command-line interface for automatically dubbing YouTube videos
-into different languages using AI/ML technologies. The pipeline handles:
-- Video/audio download from YouTube
-- Speech transcription using Whisper
-- Translation using Google Translate
-- Text-to-speech synthesis using Edge TTS
-- Audio synchronization and video rendering
+This module provides a command-line interface for automatically generating subtitles
+for YouTube videos using AI/ML technologies.
 
 Example:
-    python main.py "https://youtube.com/watch?v=VIDEO_ID" --lang es --gender female
+    python main.py "https://youtube.com/watch?v=VIDEO_ID" --lang es
 
 Author: Nguyen Cong Thuan Huy (mangodxd)
 Version: 1.0.0
@@ -25,31 +19,35 @@ import time
 import random
 from pathlib import Path
 from typing import Optional
+import asyncio
+import torch
 
-# Local imports
 import src.engines
 import src.youtube
 import src.media
 
-def check_dependencies() -> None:
+
+def _checkDeps() -> None:
     """Verifies critical dependencies are installed and accessible.
     
-    Checks for:
-    - FFmpeg and FFprobe binaries (required for media processing)
-    - PyTorch installation (required for Whisper model)
-    
+    Args:
+        None
+        
+    Returns:
+        None
+        
     Raises:
         SystemExit: If any critical dependency is missing.
+        
+    Note:
+        Checks for FFmpeg, FFprobe binaries and PyTorch installation.
     """
     from shutil import which
     
-    # TODO: Add version checks for FFmpeg and PyTorch
-    # TODO: Add support for local LLM translation models
-    # TODO: Implement 4K rendering profile support
     missing = []
-    if not which("ffmpeg"): 
+    if not which("ffmpeg"):
         missing.append("ffmpeg")
-    if not which("ffprobe"): 
+    if not which("ffprobe"):
         missing.append("ffprobe")
     
     if missing:
@@ -61,20 +59,25 @@ def check_dependencies() -> None:
     try:
         import torch
         print(f"[*] PyTorch {torch.__version__} | CUDA Available: {torch.cuda.is_available()}")
-        # NOTE: CUDA availability significantly speeds up Whisper transcription
     except ImportError:
         print("[!] CRITICAL: PyTorch not installed.")
         print("    Install with: pip install torch")
         exit(1)
 
-def cleanup() -> None:
+
+def _cleanup() -> None:
     """Clean up temporary directory with retry mechanism for Windows file locks.
     
-    Windows can lock files temporarily, especially after FFmpeg operations.
-    This function implements an exponential backoff retry strategy.
-    
-    NOTE: If cleanup fails after max retries, pipeline will continue with
-    existing temp files, which may cause unexpected behavior.
+    Args:
+        None
+        
+    Returns:
+        None
+        
+    Note:
+        Windows can lock files temporarily, especially after FFmpeg operations.
+        Implements exponential backoff retry strategy.
+        If cleanup fails after max retries, pipeline will continue.
     """
     max_retries = 5
     
@@ -84,92 +87,55 @@ def cleanup() -> None:
                 shutil.rmtree(src.engines.TEMP_DIR)
             src.engines.TEMP_DIR.mkdir(parents=True, exist_ok=True)
             return
-        except PermissionError as e:
-            # Exponential backoff: 0.5s, 1s, 2s, 4s, 8s
+        except PermissionError:
             wait_time = 0.5 * (2 ** attempt)
             print(f"[-] File locked (attempt {attempt + 1}/{max_retries}). Retrying in {wait_time}s...")
             time.sleep(wait_time)
             
     print(f"[!] WARNING: Could not fully clean temp directory after {max_retries} attempts.")
     print(f"    Files may persist in: {src.engines.TEMP_DIR}")
-    print(f"    Consider manual cleanup if issues occur.")
 
-def create_base_silence() -> Path:
-    """Generate a base silence audio file for gap filling.
-    
-    Creates a 5-minute silence file that serves as a reference for
-    filling gaps between audio segments during concatenation.
-    
-    Returns:
-        Path: Path to the generated silence file.
-        
-    Raises:
-        subprocess.CalledProcessError: If FFmpeg fails to generate silence.
-    """
-    path = src.engines.TEMP_DIR / "silence_base.wav"
-    
-    # Skip generation if file already exists to save time
-    if path.exists():
-        return path
-        
-    print(f"[*] Generating base silence file: {path}")
-    
-    cmd = [
-        'ffmpeg', '-y', '-v', 'error',
-        '-f', 'lavfi', '-i', 'anullsrc=r=24000:cl=mono',
-        '-t', '300',  # 5 minutes - should be longer than any video
-        '-c:a', 'pcm_s16le',
-        str(path)
-    ]
-    
-    subprocess.run(cmd, check=True)
-    return path
 
 def main() -> None:
-    """Main entry point for the YouTube Auto Dub pipeline.
+    """Main entry point for the YouTube Auto Sub pipeline.
     
-    Orchestrates the complete dubbing process:
-    1. Dependency validation and environment setup
-    2. Video/audio download from YouTube
-    3. Speech transcription using Whisper
-    4. Smart audio chunking for optimal processing
-    5. Translation to target language
-    6. Text-to-speech synthesis with voice gender selection
-    7. Audio duration fitting and synchronization
-    8. Final video rendering with dubbed audio
-    
+    Args:
+        None
+        
+    Returns:
+        None
+        
     Raises:
         SystemExit: On critical errors or user interruption.
+        
+    Note:
+        Orchestrates the complete subtitling process:
+        1. Dependency validation and environment setup
+        2. Video/audio download from YouTube
+        3. Speech transcription using Whisper
+        4. Smart audio chunking for optimal processing
+        5. Translation to target language
+        6. Subtitle file generation
+        7. Final video rendering with subtitles
     """
-    # Parse command line arguments
     parser = argparse.ArgumentParser(
-        description="YouTube Auto Dub - Automated Video Dubbing",
+        description="YouTube Auto Sub - Automated Video Subtitling",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
+        epilog="""\
 Examples:
   python main.py "https://youtube.com/watch?v=VIDEO_ID" --lang es
-  python main.py "https://youtube.com/watch?v=VIDEO_ID" --lang fr --gender male --gpu
+  python main.py "https://youtube.com/watch?v=VIDEO_ID" --lang fr --gpu
   python main.py "https://youtube.com/watch?v=VIDEO_ID" --lang ja --browser chrome
+  python main.py "https://youtube.com/watch?v=VIDEO_ID" --whisper_model large-v3
         """
     )
     
-    # Required arguments
-    parser.add_argument("url", help="YouTube video URL to dub")
-    
-    # Language and voice options
+    parser.add_argument("url", help="YouTube video URL to subtitle")
     parser.add_argument(
         "--lang", "-l", 
-        default="es", 
-        help="Target language ISO code (e.g., es, fr, ja, vi). Default: es"
+        default="es",
+        help="Target language ISO code (e.g., es, fr, ja, vi)."
     )
-    parser.add_argument(
-        "--gender", "-g", 
-        default="female", 
-        choices=["male", "female"],
-        help="Preferred voice gender for TTS. Default: female"
-    )
-    
-    # Authentication options
     parser.add_argument(
         "--browser", "-b", 
         help="Browser to extract cookies from (chrome, edge, firefox). Close browser first!"
@@ -178,59 +144,61 @@ Examples:
         "--cookies", "-c", 
         help="Path to cookies.txt file (Netscape format) for YouTube authentication"
     )
-    
-    # Performance options
     parser.add_argument(
         "--gpu", 
         action="store_true", 
         help="Use GPU acceleration for Whisper (requires CUDA)"
     )
-    
-    # Subtitle options
     parser.add_argument(
-        "--subtitle", "-s",
-        action="store_true",
-        help="Add subtitles into the video. WARNING: Creates slower render time."
+        "--whisper_model", "-wm",
+        help="Whisper model to use (tiny, base, small, medium, large-v3). Default: auto-select based on VRAM"
     )
     
     args = parser.parse_args()
 
-    # STEP 0: Environment Setup & Dependency Check
     print("\n" + "="*60)
-    print("YOUTUBE AUTO DUB - INITIALIZING")
+    print("YOUTUBE AUTO SUB - INITIALIZING")
     print("="*60)
     
-    check_dependencies()
-    cleanup()
+    _checkDeps()
+    _cleanup()
     
-    # Configure processing device
-    device = "cuda" if args.gpu else "cpu"
+    if torch.backends.mps.is_available():
+        device = "mps"
+    elif torch.cuda.is_available():
+        device = "cuda"
+    else:
+        device = "cpu"
     print(f"[*] Using device: {device.upper()}")
     
-    # Initialize AI engines
+    # Set Whisper model based on user input or auto-selection
+    if args.whisper_model:
+        src.engines.ASR_MODEL = args.whisper_model
+        print(f"[*] Using specified Whisper model: {args.whisper_model}")
+    else:
+        print(f"[*] Auto-selected Whisper model: {src.engines.ASR_MODEL} (based on VRAM)")
+    
     engine = src.engines.Engine(device)
     
-    # STEP 1: YouTube Content Download
     print(f"\n{'='*60}")
     print(f"STEP 1: DOWNLOADING CONTENT")
     print(f"{'='*60}")
     print(f"[*] Target URL: {args.url}")
     print(f"[*] Target Language: {args.lang.upper()}")
-    print(f"[*] Voice Gender: {args.gender.upper()}")
     
     try:
-        video_path = src.youtube.download_video(
+        videoPath = src.youtube.downloadVideo(
             args.url, 
             browser=args.browser, 
             cookies_file=args.cookies
         )
-        audio_path = src.youtube.download_audio(
+        audioPath = src.youtube.downloadAudio(
             args.url, 
             browser=args.browser, 
             cookies_file=args.cookies
         )
-        print(f"[+] Video downloaded: {video_path}")
-        print(f"[+] Audio extracted: {audio_path}")
+        print(f"[+] Video downloaded: {videoPath}")
+        print(f"[+] Audio extracted: {audioPath}")
     except Exception as e:
         print(f"\n[!] DOWNLOAD FAILED: {e}")
         print("\n[-] TROUBLESHOOTING TIPS:")
@@ -240,30 +208,25 @@ Examples:
         print("    4. Verify YouTube URL is correct")
         return
 
-    # STEP 2: Speech Transcription
     print(f"\n{'='*60}")
     print(f"STEP 2: SPEECH TRANSCRIPTION")
     print(f"{'='*60}")
     print(f"[*] Transcribing audio with Whisper ({src.engines.ASR_MODEL})...")
     
-    raw_segments = engine.transcribe_safe(audio_path)
+    raw_segments = engine.transcribeSafe(audioPath)
     print(f"[+] Transcription complete: {len(raw_segments)} segments")
     
-    # DEBUG: Show first few segments for verification
     if len(raw_segments) > 0:
         print(f"[*] Sample segment: '{raw_segments[0]['text'][:50]}...'")
     
-    # STEP 3: Smart Audio Chunking
     print(f"\n{'='*60}")
     print(f"STEP 3: INTELLIGENT CHUNKING")
     print(f"{'='*60}")
     
-    # TODO: Make chunking parameters configurable
-    chunks = src.engines.smart_chunk(raw_segments)
+    chunks = src.engines.smartChunk(raw_segments)
     print(f"[+] Optimized {len(raw_segments)} raw segments into {len(chunks)} chunks")
     print(f"[*] Average chunk duration: {sum(c['end']-c['start'] for c in chunks)/len(chunks):.2f}s")
 
-    # STEP 4: Translation Processing
     print(f"\n{'='*60}")
     print(f"STEP 4: TRANSLATION ({args.lang.upper()})")
     print(f"{'='*60}")
@@ -271,110 +234,46 @@ Examples:
     texts = [c['text'] for c in chunks]
     print(f"[*] Translating {len(texts)} text segments...")
     
-    # NOTE: Translation uses Google Translate API via web scraping
-    # Rate limiting is implemented to avoid IP bans
-    translated_texts = engine.translate_safe(texts, args.lang)
+    translated_texts = engine.translateSafe(texts, args.lang)
     
-    # Merge translations back into chunks
     for i, chunk in enumerate(chunks):
         chunk['trans_text'] = translated_texts[i]
     
     print(f"[+] Translation complete")
     
-    # DEBUG: Show sample translation
     if len(chunks) > 0:
         original = chunks[0]['text'][:50]
         translated = chunks[0]['trans_text'][:50]
         print(f"[*] Sample: '{original}' -> '{translated}'")
 
-    # STEP 5: Text-to-Speech Synthesis & Audio Fitting
     print(f"\n{'='*60}")
-    print(f"STEP 5: TTS SYNTHESIS & AUDIO SYNC")
+    print(f"STEP 5: SUBTITLE GENERATION")
     print(f"{'='*60}")
-    print(f"[*] Generating {args.gender} voice in {args.lang.upper()}...")
     
-    # Progress tracking variables
-    failed_tts = 0
-    processed_chunks = 0
-    
-    for i, chunk in enumerate(chunks):
-        filename = f"chunk_{i:04d}.mp3"
-        tts_path = src.engines.TEMP_DIR / filename
-        
-        try:
-            # Generate TTS audio
-            engine.synthesize(
-                text=chunk['trans_text'], 
-                target_lang=args.lang, 
-                gender=args.gender, 
-                out_path=tts_path
-            )
-            
-            # IMPORTANT: Add jitter to prevent API rate limiting
-            # Edge TTS has undocumented rate limits
-            time.sleep(random.uniform(0.5, 1.5))
-            
-            # Fit audio to original timing
-            slot_duration = chunk['end'] - chunk['start']
-            final_audio = src.media.fit_audio(tts_path, slot_duration)
-            chunk['processed_audio'] = final_audio
-            
-            processed_chunks += 1
-            
-        except Exception as e:
-            print(f"\n[!] TTS failed for chunk {i}: {e}")
-            failed_tts += 1
-            # Continue with next chunk instead of failing completely
-            continue
-        
-        # Progress update every 5 chunks
-        if i % 5 == 0:
-            progress = (i + 1) / len(chunks) * 100
-            print(f"[-] Progress: {i+1}/{len(chunks)} ({progress:.1f}%)", end='\r')
-    
-    print(f"\n[+] TTS complete: {processed_chunks}/{len(chunks)} chunks processed")
-    if failed_tts > 0:
-        print(f"[!] WARNING: {failed_tts} chunks failed TTS synthesis")
+    subtitle_path = src.engines.TEMP_DIR / "subtitles.srt"
+    src.media.generate_srt(chunks, subtitle_path)
+    print(f"[+] Subtitles generated: {subtitle_path}")
 
-    # STEP 6: Final Video Rendering
     print(f"\n{'='*60}")
     print(f"STEP 6: FINAL VIDEO RENDERING")
     print(f"{'='*60}")
     
     try:
-        # Create base silence for gap filling
-        silence_path = create_base_silence()
-        concat_list_path = src.engines.TEMP_DIR / "concat_list.txt"
-        
-        print(f"[*] Creating concatenation manifest...")
-        src.media.create_concat_file(chunks, silence_path, concat_list_path)
-        
-        # Handle subtitle generation if requested
-        subtitle_path = None
-        if args.subtitle:
-            subtitle_path = src.engines.TEMP_DIR / "subtitles.srt"
-            src.media.generate_srt(chunks, subtitle_path)
-        
-        # Generate output filename with subtitle suffix
-        video_name = video_path.stem
-        sub_suffix = "_sub" if args.subtitle else ""
-        out_name = f"dubbed_{args.lang}_{args.gender}{sub_suffix}_{video_name}.mp4"
+        video_name = videoPath.stem
+        out_name = f"subtitled_{args.lang}_{video_name}.mp4"
         final_output = src.engines.OUTPUT_DIR / out_name
         
-        print(f"[*] Rendering final video...")
-        print(f"    Source: {video_path}")
+        print(f"[*] Rendering final video with subtitles...")
+        print(f"    Source: {videoPath}")
         print(f"    Output: {final_output}")
-        if subtitle_path:
-            print(f"    Subtitles: {subtitle_path} (Re-encoding required)")
+        print(f"    Subtitles: {subtitle_path}")
         
-        src.media.render_video(video_path, concat_list_path, final_output, subtitle_path=subtitle_path)
+        src.media.render_video(videoPath, None, final_output, subtitle_path=subtitle_path)
         
-        # Verify output file was created
         if final_output.exists():
-            file_size = final_output.stat().st_size / (1024 * 1024)  # MB
+            file_size = final_output.stat().st_size / (1024 * 1024)
             print(f"\n[+] SUCCESS! Video rendered successfully.")
             print(f"    Output: {final_output}")
-            print(f"    Size: {file_size:.1f} MB")
         else:
             print(f"\n[!] ERROR: Output file not created at {final_output}")
             
@@ -388,11 +287,11 @@ Examples:
         
     finally:
         print(f"\n{'='*60}")
-        print("YOUTUBE AUTO DUB - PIPELINE COMPLETE")
+        print("YOUTUBE AUTO SUB - PIPELINE COMPLETE")
         print(f"{'='*60}")
 
+
 if __name__ == "__main__":
-    # NOTE: Entry point with error handling for uncaught exceptions
     try:
         main()
     except KeyboardInterrupt:
