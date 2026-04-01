@@ -1,93 +1,45 @@
-"""Google Translate Integration Module for YouTube Auto Dub.
-
-This module provides robust translation capabilities by implementing a dual-strategy 
-approach: the internal 'batchexecute' RPC API for high-quality results, and a 
-mobile web scraping fallback for maximum reliability.
-
-Acknowledgement: 
-This implementation is inspired by and adapted from the logic found in the 
-'deep-translator' library (nidhaloff/deep-translator). Optimized and 
-refactored for the YouTube Auto Dub pipeline requirements.
-
-Author: Nguyen Cong Thuan Huy (mangodxd)
-Version: 1.0.0
-"""
-
 import json
 import re
 import httpx
-from urllib.parse import quote
+from typing import List
 from bs4 import BeautifulSoup
-from browserforge.headers import HeaderGenerator
-
+from .ui import console
 
 class GoogleTranslator:
-    """A unified Google Translator that attempts to use the internal 'batchexecute' API (RPC)
-    first, and falls back to web scraping the mobile site if that fails.
-    """
-    
-    def __init__(self, proxy=None):
-        """Initialize Google Translator.
-        
-        Args:
-            proxy: Optional proxy configuration.
-        """
+    def __init__(self):
+        self.client = httpx.AsyncClient(timeout=15)
         self.base_url_rpc = "https://translate.google.com/_/TranslateWebserverUi/data/batchexecute"
         self.base_url_scrape = "https://translate.google.com/m"
-        
-        self.headers = HeaderGenerator().generate()
-        
-        self.proxy = proxy
-        self.client = httpx.Client(proxy=self.proxy, timeout=10)
+        self.headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         
         self.bl = None
 
-    def _refreshRpcToken(self):
-        """Refreshes the 'cfb2h' token required for the RPC interface.
-        
-        Returns:
-            None
-        """
+    async def _refreshRpcToken(self):
         try:
-            response = self.client.get("https://translate.google.com/", headers=self.headers)
+            response = await self.client.get("https://translate.google.com/", headers=self.headers)
             bl_match = re.search(r'"cfb2h":"(.*?)"', response.text)
             if bl_match:
                 self.bl = bl_match.group(1)
             else:
                 self.bl = "boq_translate-webserver_20251215.06_p0"
         except Exception as e:
-            print(f"[Warning] Token refresh failed: {e}. Using fallback.")
+            console.warning(f"Token refresh failed: {e}. Using fallback.")
             self.bl = "boq_translate-webserver_20251215.06_p0"
 
-    def _parseRpcResponse(self, raw_text):
-        """Parses the nested JSON response from the RPC endpoint.
-        
-        Args:
-            raw_text: Raw response text from RPC endpoint.
-            
-        Returns:
-            Translated text string.
-            
-        Raises:
-            ValueError: If parsing fails.
-        """
+    async def _parseRpcResponse(self, raw_text):
         try:
             match = re.search(r'\["wrb.fr","MkEWBc","(.*?)",null,null,null,"generic"\]', raw_text, re.DOTALL)
-            if not match:
-                raise ValueError("Could not find translation data in RPC response.")
-
+            if not match: raise ValueError("Could not find translation data in RPC response.")
             inner_json_str = match.group(1).replace('\\"', '"').replace('\\\\', '\\')
             data = json.loads(inner_json_str)
-            
             translation_parts = data[1][0][0][5]
-            
             final_text = " ".join([part[0] for part in translation_parts if part[0]])
             return final_text
         except Exception as e:
             raise ValueError(f"RPC Parse Error: {e}")
 
-    def _translateRpc(self, text, source, target):
-        """Method 1: Internal API (batchexecute). Higher quality, mimics browser app.
+    async def _translateRpc(self, text, source, target):
+        """Method 1: fake browser api requests
         
         Args:
             text: Text to translate.
@@ -95,13 +47,13 @@ class GoogleTranslator:
             target: Target language code.
             
         Returns:
-            Translated text string.
+            translated text string.
             
         Raises:
-            Exception: If translation fails.
+            exception: if translation fails.
         """
         if not self.bl:
-            self._refreshRpcToken()
+            await self._refreshRpcToken()
         
         rpc_arg = json.dumps([[text, source, target, True, [1]]], ensure_ascii=False)
         f_req = json.dumps([["MkEWBc", rpc_arg, None, "generic"]])
@@ -113,7 +65,7 @@ class GoogleTranslator:
             "rt": "c"
         }
         
-        response = self.client.post(
+        response = await self.client.post(
             self.base_url_rpc, 
             headers=self.headers, 
             params=params, 
@@ -125,8 +77,8 @@ class GoogleTranslator:
         
         return self._parseRpcResponse(response.text)
 
-    def _translateScrape(self, text, source, target):
-        """Method 2: Web Scraping (Mobile Site). Simple fallback.
+    async def _translateScrape(self, text, source, target):
+        """method 2: Web Scraping. Simple fallback.
         
         Args:
             text: Text to translate.
@@ -134,10 +86,10 @@ class GoogleTranslator:
             target: Target language code.
             
         Returns:
-            Translated text string.
+            translated text string.
             
         Raises:
-            Exception: If translation fails.
+            exception: if translation fails.
         """
         params = {
             "sl": source,
@@ -145,26 +97,26 @@ class GoogleTranslator:
             "q": text
         }
         
-        response = self.client.get(self.base_url_scrape, params=params, headers=self.headers)
+        response = await self.client.get(self.base_url_scrape, params=params, headers=self.headers)
         
         if response.status_code == 429:
             raise Exception("Too Many Requests (429)")
         if response.status_code != 200:
-            raise Exception(f"Scrape HTTP Error: {response.status_code}")
+            raise Exception(f"Scrape HTTP Error: {response.text}")
 
         soup = BeautifulSoup(response.text, "html.parser")
         
         element = soup.find("div", {"class": "t0"})
+
         if not element:
             element = soup.find("div", {"class": "result-container"})
-        
         if not element:
             raise Exception("Could not find translation element in HTML.")
             
         return element.get_text(strip=True)
 
-    def translate(self, text, source="auto", target="vi"):
-        """Main interface. Tries RPC first, falls back to Scraping.
+    async def translate(self, text, source="auto", target="vi"):
+        """Main interface. Tries API first, falls back to Scraping.
         
         Args:
             text: Text to translate.
@@ -172,25 +124,33 @@ class GoogleTranslator:
             target: Target language code. Default 'vi'.
             
         Returns:
-            Translated text string or error message.
+            translated text string or error message.
         """
         if not text:
             return ""
             
         try:
-            return self._translateRpc(text, source, target)
+            return await self._translateRpc(text, source, target)
         except Exception:
             pass
 
         try:
-            return self._translateScrape(text, source, target)
+            return await self._translateScrape(text, source, target)
         except Exception as e:
-            return f"Error: All translation methods failed. Last error: {e}"
+            console.error(f"All translation methods failed: {e}")
+            return text
 
-    def close(self):
-        """Close the HTTP client.
+    async def translate_batch(self, texts: List[str], target: str) -> List[str]:
+        delimiter = "\n\n|||\n\n"
+        combined = delimiter.join([t if t.strip() else " " for t in texts])
         
-        Returns:
-            None
-        """
-        self.client.close()
+        translated_combined = await self.translate(combined, target=target)
+        results = [t.strip() for t in translated_combined.split(delimiter.strip())]
+        
+        if len(results) != len(texts):
+            results = [await self.translate(t, target=target) for t in texts]
+        
+        return results
+
+    async def close(self):
+        await self.client.aclose()
